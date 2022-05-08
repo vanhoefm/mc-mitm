@@ -1,5 +1,6 @@
 /*
  * hostapd - WPA/RSN IE and KDE definitions
+ * Copyright (c) 2017-2022, Mathy Vanhoef <mathy.vanhoef@kuleuven.be>
  * Copyright (c) 2004-2018, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
@@ -95,8 +96,15 @@ static u16 wpa_own_rsn_capab(struct wpa_auth_config *conf)
 	if (conf->rsn_preauth)
 		capab |= WPA_CAPABILITY_PREAUTH;
 	if (conf->wmm_enabled) {
+#ifdef ATTACK_MC_MITM
+		/* PTKSA replay counters when using WMM */
+		capab |= (conf->rsn_ptksa_counters << 2);
+		/* GTKSA replay counters when using WMM */
+		capab |= (conf->rsn_gtksa_counters << 4);
+#else /* ATTACK_MC_MITM */
 		/* 4 PTKSA replay counters when using WMM */
 		capab |= (RSN_NUM_REPLAY_COUNTERS_16 << 2);
+#endif /* ATTACK_MC_MITM */
 	}
 	if (conf->ieee80211w != NO_MGMT_FRAME_PROTECTION) {
 		capab |= WPA_CAPABILITY_MFPC;

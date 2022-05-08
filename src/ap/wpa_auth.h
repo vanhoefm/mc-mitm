@@ -1,5 +1,6 @@
 /*
  * hostapd - IEEE 802.11i-2004 / WPA Authenticator
+ * Copyright (c) 2017-2022, Mathy Vanhoef <mathy.vanhoef@kuleuven.be>
  * Copyright (c) 2004-2022, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
@@ -186,6 +187,11 @@ struct wpa_auth_config {
 	int rsn_preauth;
 	int eapol_version;
 	int wmm_enabled;
+#ifdef ATTACK_MC_MITM
+	int wmm_advertised;
+	int rsn_ptksa_counters;
+	int rsn_gtksa_counters;
+#endif /* ATTACK_MC_MITM */
 	int wmm_uapsd;
 	int disable_pmksa_caching;
 	int okc;

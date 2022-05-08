@@ -1,5 +1,6 @@
 /*
  * hostapd / Configuration definitions and helpers functions
+ * Copyright (c) 2017-2022, Mathy Vanhoef <mathy.vanhoef@kuleuven.be>
  * Copyright (c) 2003-2022, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
@@ -19,6 +20,8 @@
 #include "wps/wps.h"
 #include "fst/fst.h"
 #include "vlan.h"
+
+#include "common/attacks.h"
 
 enum macaddr_acl {
 	ACCEPT_UNLESS_DENIED = 0,
@@ -465,6 +468,11 @@ struct hostapd_bss_config {
 	int no_probe_resp_if_max_sta;
 
 	int wmm_enabled;
+#ifdef ATTACK_MC_MITM
+	int wmm_advertised;
+	int rsn_ptksa_counters;
+	int rsn_gtksa_counters;
+#endif /* ATTACK_MC_MITM */
 	int wmm_uapsd;
 
 	struct hostapd_vlan *vlan;

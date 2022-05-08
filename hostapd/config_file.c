@@ -1,5 +1,6 @@
 /*
  * hostapd / Configuration file parser
+ * Copyright (c) 2017-2022, Mathy Vanhoef <mathy.vanhoef@kuleuven.be>
  * Copyright (c) 2003-2018, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
@@ -3374,6 +3375,14 @@ static int hostapd_config_fill(struct hostapd_config *conf,
 	} else if (os_strcmp(buf, "wme_enabled") == 0 ||
 		   os_strcmp(buf, "wmm_enabled") == 0) {
 		bss->wmm_enabled = atoi(pos);
+#ifdef ATTACK_MC_MITM
+	} else if (os_strcmp(buf, "wmm_advertised") == 0) {
+		bss->wmm_advertised = atoi(pos);
+	} else if (os_strcmp(buf, "rsn_ptksa_counters") == 0) {
+		bss->rsn_ptksa_counters = atoi(pos);
+	} else if (os_strcmp(buf, "rsn_gtksa_counters") == 0) {
+		bss->rsn_gtksa_counters = atoi(pos);
+#endif /* ATTACK_MC_MITM */
 	} else if (os_strcmp(buf, "uapsd_advertisement_enabled") == 0) {
 		bss->wmm_uapsd = atoi(pos);
 	} else if (os_strncmp(buf, "wme_ac_", 7) == 0 ||

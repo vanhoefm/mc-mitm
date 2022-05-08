@@ -1,5 +1,6 @@
 /*
  * IEEE 802.11 RSN / WPA Authenticator
+ * Copyright (c) 2017-2022, Mathy Vanhoef <mathy.vanhoef@kuleuven.be>
  * Copyright (c) 2004-2022, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
@@ -32,6 +33,8 @@
 #include "pmksa_cache_auth.h"
 #include "wpa_auth_i.h"
 #include "wpa_auth_ie.h"
+
+#include "common/attacks.h"
 
 #define STATE_MACHINE_DATA struct wpa_state_machine
 #define STATE_MACHINE_DEBUG_PREFIX "WPA"
@@ -68,10 +71,19 @@ static void wpa_group_put(struct wpa_authenticator *wpa_auth,
 static int ieee80211w_kde_len(struct wpa_state_machine *sm);
 static u8 * ieee80211w_kde_add(struct wpa_state_machine *sm, u8 *pos);
 
+#ifdef ATTACK_MC_MITM
+// TODO: We should just not start the 4-way HS or anything?
+/* These three values are modified for the MC-MITM position */
+static const u32 eapol_key_timeout_first = 1000000; /* ms */
+static const u32 eapol_key_timeout_subseq = 1000000; /* ms */
+static const u32 eapol_key_timeout_first_group = 1000000; /* ms */
+static const u32 eapol_key_timeout_no_retrans = 4000000; /* ms */
+#else
 static const u32 eapol_key_timeout_first = 100; /* ms */
 static const u32 eapol_key_timeout_subseq = 1000; /* ms */
 static const u32 eapol_key_timeout_first_group = 500; /* ms */
 static const u32 eapol_key_timeout_no_retrans = 4000; /* ms */
+#endif
 
 /* TODO: make these configurable */
 static const int dot11RSNAConfigPMKLifetime = 43200;
@@ -1114,6 +1126,11 @@ void wpa_receive(struct wpa_authenticator *wpa_auth,
 		msgtxt = "2/4 Pairwise";
 	}
 
+#ifdef ATTACK_MC_MITM
+	printf(">>> %s: Igning all EAPOL frames\n", __FUNCTION__);
+	return;
+#endif /* ATTACK_MC_MITM */
+
 	if (msg == REQUEST || msg == PAIRWISE_2 || msg == PAIRWISE_4 ||
 	    msg == GROUP_2) {
 		u16 ver = key_info & WPA_KEY_INFO_TYPE_MASK;
@@ -1701,8 +1718,14 @@ void __wpa_send_eapol(struct wpa_authenticator *wpa_auth,
 	}
 
 	wpa_auth_set_eapol(wpa_auth, sm->addr, WPA_EAPOL_inc_EapolFramesTx, 1);
+
+#ifdef ATTACK_MC_MITM
+	// Note: there is never any point in sending EAPOL frames, because we do not know the valid KCK and KEK.
+	printf(">>> %s: not sending EAPOL frame\n", __FUNCTION__);
+#else
 	wpa_auth_send_eapol(wpa_auth, sm->addr, (u8 *) hdr, len,
 			    sm->pairwise_set);
+#endif
 	os_free(hdr);
 }
 
@@ -2202,7 +2225,9 @@ SM_STATE(WPA_PTK, PTKSTART)
 	sm->alt_snonce_valid = false;
 	sm->ptkstart_without_success++;
 
+#ifndef ATTACK_MC_MITM
 	sm->TimeoutCtr++;
+#endif /* ATTACK_MC_MITM */
 	if (sm->TimeoutCtr > sm->wpa_auth->conf.wpa_pairwise_update_count) {
 		/* No point in sending the EAPOL-Key - we will disconnect
 		 * immediately following this. */
@@ -3414,7 +3439,9 @@ SM_STATE(WPA_PTK, PTKINITNEGOTIATING)
 	SM_ENTRY_MA(WPA_PTK, PTKINITNEGOTIATING, wpa_ptk);
 	sm->TimeoutEvt = false;
 
+#ifndef ATTACK_MC_MITM
 	sm->TimeoutCtr++;
+#endif /* ATTACK_MC_MITM */
 	if (conf->wpa_disable_eapol_key_retries && sm->TimeoutCtr > 1) {
 		/* Do not allow retransmission of EAPOL-Key msg 3/4 */
 		return;
@@ -3895,7 +3922,9 @@ SM_STATE(WPA_PTK_GROUP, REKEYNEGOTIATING)
 
 	SM_ENTRY_MA(WPA_PTK_GROUP, REKEYNEGOTIATING, wpa_ptk_group);
 
+#ifndef ATTACK_MC_MITM
 	sm->GTimeoutCtr++;
+#endif /* ATTACK_MC_MITM */
 	if (conf->wpa_disable_eapol_key_retries && sm->GTimeoutCtr > 1) {
 		/* Do not allow retransmission of EAPOL-Key group msg 1/2 */
 		return;

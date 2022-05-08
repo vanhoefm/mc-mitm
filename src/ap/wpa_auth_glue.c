@@ -1,5 +1,6 @@
 /*
  * hostapd / WPA authenticator glue code
+ * Copyright (c) 2017-2022, Mathy Vanhoef <mathy.vanhoef@kuleuven.be>
  * Copyright (c) 2002-2022, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
@@ -34,6 +35,7 @@
 #include "wpa_auth.h"
 #include "wpa_auth_glue.h"
 
+#include "common/attacks.h"
 
 static void hostapd_wpa_auth_conf(struct hostapd_bss_config *conf,
 				  struct hostapd_config *iconf,
@@ -63,6 +65,11 @@ static void hostapd_wpa_auth_conf(struct hostapd_bss_config *conf,
 		wconf->eapol_version = 2;
 #endif /* CONFIG_MACSEC */
 	wconf->wmm_enabled = conf->wmm_enabled;
+#ifdef ATTACK_MC_MITM
+	wconf->wmm_advertised = conf->wmm_advertised;
+	wconf->rsn_ptksa_counters = conf->rsn_ptksa_counters;
+	wconf->rsn_gtksa_counters = conf->rsn_gtksa_counters;
+#endif /* ATTACK_MC_MITM */
 	wconf->wmm_uapsd = conf->wmm_uapsd;
 	wconf->disable_pmksa_caching = conf->disable_pmksa_caching;
 #ifdef CONFIG_OCV

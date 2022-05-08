@@ -3,6 +3,7 @@
  * Copyright 2002-2003, Instant802 Networks, Inc.
  * Copyright 2005-2006, Devicescape Software, Inc.
  * Copyright (c) 2009, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2017-2022, Mathy Vanhoef <mathy.vanhoef@kuleuven.be>
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -19,6 +20,8 @@
 #include "ap_config.h"
 #include "ap_drv_ops.h"
 #include "wmm.h"
+
+#include "common/attacks.h"
 
 #ifndef MIN
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
@@ -116,8 +119,16 @@ u8 * hostapd_eid_wmm(struct hostapd_data *hapd, u8 *eid)
 
 	os_memset(wmmp, 0, sizeof(wmmp));
 
+#ifdef ATTACK_MC_MITM
+	if (!hapd->conf->wmm_advertised) {
+		printf(">>> %s: not including WMM element in beacon or probe response\n", __FUNCTION__);
+		return eid;
+	}
+#else
 	if (!hapd->conf->wmm_enabled)
 		return eid;
+#endif /* ATTACK_MC_MITM */
+
 	wmm_calc_regulatory_limit(hapd, wmmp);
 	eid[0] = WLAN_EID_VENDOR_SPECIFIC;
 	wmm->oui[0] = 0x00;

@@ -1,5 +1,6 @@
 /*
  * hostapd / Configuration helper functions
+ * Copyright (c) 2017-2022, Mathy Vanhoef <mathy.vanhoef@kuleuven.be>
  * Copyright (c) 2003-2022, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
@@ -24,6 +25,7 @@
 #include "airtime_policy.h"
 #include "ap_config.h"
 
+#include "common/attacks.h"
 
 static void hostapd_config_free_vlan(struct hostapd_bss_config *bss)
 {
@@ -83,6 +85,11 @@ void hostapd_config_defaults_bss(struct hostapd_bss_config *bss)
 #endif /* CONFIG_NO_TKIP */
 	bss->rsn_pairwise = 0;
 
+#ifdef ATTACK_MC_MITM
+	bss->rsn_ptksa_counters = 3;
+	bss->rsn_gtksa_counters = 3;
+#endif /* ATTACK_MC_MITM */
+
 	bss->max_num_sta = MAX_STA_COUNT;
 
 	bss->dtim_period = 2;
@@ -109,6 +116,9 @@ void hostapd_config_defaults_bss(struct hostapd_bss_config *bss)
 
 	/* Set to -1 as defaults depends on HT in setup */
 	bss->wmm_enabled = -1;
+#ifdef ATTACK_MC_MITM
+	bss->wmm_advertised = 1;
+#endif /* ATTACK_MC_MITM */
 
 #ifdef CONFIG_IEEE80211R_AP
 	bss->ft_over_ds = 1;

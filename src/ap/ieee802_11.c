@@ -1,5 +1,6 @@
 /*
  * hostapd / IEEE 802.11 Management
+ * Copyright (c) 2017-2022, Mathy Vanhoef <mathy.vanhoef@kuleuven.be>
  * Copyright (c) 2002-2017, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
@@ -56,6 +57,17 @@
 #include "dpp_hostapd.h"
 #include "gas_query_ap.h"
 
+#include "common/attacks.h"
+
+#ifdef ATTACK_MC_MITM
+/**
+ * Our MC-MITM won't process association requests. Instead we directly
+ * call this function when receiving an association request.
+ */
+static void handle_assoc_cb(struct hostapd_data *hapd,
+			    const struct ieee80211_mgmt *mgmt,
+			    size_t len, int reassoc, int ok);
+#endif /* ATTACK_MC_MITM */
 
 #ifdef CONFIG_FILS
 static struct wpabuf *
@@ -394,6 +406,9 @@ static int send_auth_reply(struct hostapd_data *hapd, struct sta_info *sta,
 	if (ies && ies_len)
 		os_memcpy(reply->u.auth.variable, ies, ies_len);
 
+#ifdef ATTACK_MC_MITM
+	printf(">>> %s: not sending own authentication reply\n", __FUNCTION__);
+#else /* ATTACK_MC_MITM */
 	wpa_printf(MSG_DEBUG, "authentication reply: STA=" MACSTR
 		   " auth_alg=%d auth_transaction=%d resp=%d (IE len=%lu) (dbg=%s)",
 		   MAC2STR(dst), auth_alg, auth_transaction,
@@ -432,6 +447,7 @@ static int send_auth_reply(struct hostapd_data *hapd, struct sta_info *sta,
 	if (hostapd_drv_send_mlme(hapd, reply, rlen, 0, NULL, 0, 0) < 0)
 		wpa_printf(MSG_INFO, "send_auth_reply: send failed");
 	else
+#endif /* ATTACK_MC_MITM */
 		reply_res = WLAN_STATUS_SUCCESS;
 
 	os_free(buf);
@@ -5353,11 +5369,16 @@ rsnxe_done:
 	}
 #endif /* CONFIG_FILS */
 
+#ifdef ATTACK_MC_MITM
+	printf(">>> %s: not sending association reply (status=%d)\n", __FUNCTION__, status_code);
+	handle_assoc_cb(hapd, reply, send_len, 0, 1);
+#else /* ATTACK_MC_MITM */
 	if (hostapd_drv_send_mlme(hapd, reply, send_len, 0, NULL, 0, 0) < 0) {
 		wpa_printf(MSG_INFO, "Failed to send assoc resp: %s",
 			   strerror(errno));
 		res = WLAN_STATUS_UNSPECIFIED_FAILURE;
 	}
+#endif /* ATTACK_MC_MITM */
 
 done:
 	os_free(buf);
@@ -6875,6 +6896,11 @@ void ieee802_11_rx_from_unknown(struct hostapd_data *hapd, const u8 *src,
 				int wds)
 {
 	struct sta_info *sta;
+
+#ifdef ATTACK_MC_MITM
+	printf(">> ieee802_11_rx_from_unknown: not sending deauth/disassoc\n");
+	return;
+#endif /* ATTACK_MC_MITM */
 
 	sta = ap_get_sta(hapd, src);
 	if (sta &&
