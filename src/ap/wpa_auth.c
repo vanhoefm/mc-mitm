@@ -1127,7 +1127,7 @@ void wpa_receive(struct wpa_authenticator *wpa_auth,
 	}
 
 #ifdef ATTACK_MC_MITM
-	printf(">>> %s: Igning all EAPOL frames\n", __FUNCTION__);
+	printf(">>> %s: Ignoring all EAPOL frames\n", __FUNCTION__);
 	return;
 #endif /* ATTACK_MC_MITM */
 
