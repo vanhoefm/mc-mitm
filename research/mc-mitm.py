@@ -318,6 +318,12 @@ class ClientState():
 	#                less debug output about this client will be printed.
 	Initializing, Connecting, GotMitm, Attack_Started, Attack_Done = range(5)
 
+	def state2str(self, state):
+		strings = ["Initializing", "Connecting", "GotMitm", "Attack_Started", "Attack_Done"]
+		assert 0 <= state < len(strings)
+		return strings[state]
+
+
 	def __init__(self, macaddr):
 		self.macaddr = macaddr
 		self.reset()
@@ -332,7 +338,7 @@ class ClientState():
 
 
 	def update_state(self, state):
-		log(DEBUG, "Client %s moved to state %d" % (self.macaddr, state), showtime=False)
+		log(DEBUG, f"Client {self.macaddr} moved to state {self.state2str(state)}", showtime=False)
 		self.state = state
 
 
