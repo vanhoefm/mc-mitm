@@ -437,24 +437,6 @@ class McMitm():
 		if macaddr in self.clients:
 			del self.clients[macaddr]
 
-	def find_beacon(self, ssid):
-		# FIXME: Use the find_network function of libwifi.
-		self.sock_real.recv()
-		ps = sniff(count=1, timeout=0.3, lfilter=lambda p: get_ssid(p) == ssid, opened_socket=self.sock_real)
-		if ps is None or len(ps) < 1:
-			log(STATUS, "Searching for target network on other channels")
-			for chan in [1, 6, 11, 3, 8, 2, 7, 4, 10, 5, 9, 12, 13]:
-				self.sock_real.set_channel(chan)
-				log(DEBUG, "Listening on channel %d" % chan)
-				ps = sniff(count=1, timeout=0.3, lfilter=lambda p: get_ssid(p) == ssid, opened_socket=self.sock_real)
-				if ps and len(ps) >= 1: break
-
-		if ps and len(ps) >= 1:
-			actual_chan = orb(get_element(ps[0], IEEE_TLV_TYPE_CHANNEL).info)
-			self.sock_real.set_channel(actual_chan)
-			self.beacon = ps[0]
-			self.apmac = self.beacon.addr2
-
 
 	def send_csa_beacon(self, numpairs=1, target=None, silent=False):
 		"""
@@ -774,10 +756,12 @@ class McMitm():
 
 		# Test monitor mode and get MAC address of the network
 		if self.nic_real_clientack: subprocess.check_output(["ifconfig", self.nic_real_clientack, "down"])
-		self.find_beacon(self.ssid)
+		self.beacon = find_network(self.nic_real, self.ssid, opened_socket=self.sock_real)
 		if self.beacon is None:
 			log(ERROR, "No beacon received of network <%s>. Is monitor mode working? Did you enter the correct SSID?" % self.ssid)
 			return
+		self.apmac = self.beacon.addr2
+
 		# Parse beacon and used this to generate a cloned hostapd_rogue.conf
 		self.netconfig = NetworkConfig()
 		self.netconfig.from_beacon(self.beacon)
