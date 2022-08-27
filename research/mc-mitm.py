@@ -5,31 +5,34 @@
 # See README for more details.
 
 
-# DESIGN BACKGROUND
+# --- DESIGN BACKGROUND ---
 #
-# A naive method to implement a Multi-Channel Machine-in-the-Middle is to create
+# An alternative method to implement a Multi-Channel Machine-in-the-Middle is to create
 # two monitor interfaces (on two different channels) and to forward frames between
 # both channels. Although simple and only requiring monitor mode support, this
-# approach has notable downsides:
+# approach has notable downsides in practice:
 #
 # - Both interfaces will likely not acknowledge frames sent towards it. This means the
-#   legitimate devices will constantly retransmit frames. This may cause handshakes
-#   to fail. The ACK behaviour in monitor mode seems to depend on the network card being:
-#   some behave different by default. But we cannot rely on frames being ACK;ed. In theory
-#   this can be fixed by executing `iw wlan0 set monitor active` but very few devices
-#   support the `active` flag. Note that we cannot second ACK frames from Scapy, they
-#   would be generated *way* too slow (in userspace C code this is also too slow).
+#   legitimate client and AP will constantly retransmit frames. This may cause handshakes
+#   to fail. The ACK behaviour in monitor mode seems to depend on the network card being
+#   used: some behave different by default. But in general we cannot rely on frames being
+#   ACK'ed. In theory this can be fixed by executing `iw wlan0 set monitor active` but very
+#   few devices support the `active` flag. When this flag is set, the network card in monitor
+#   mode is supposed to ACK frames send towards it. Note that we cannot send ACK frames from
+#   Scapy, they would be generated *way* too slow. Even sending ACKs in userspace C code
+#   would be too slow (they typically should be send in under 10 microseconds).
 #
 # - Both interfaces will not retransmit frames when the reciever doesn't acknowledge
 #   the frame. So there could be a high amount of packet loss. This again depends on
 #   the network card, some behave different by default when in monitor mode, but many
 #   won't retransmit frames by default.
 #
-# - There will be no transmission rate control. All frames are sent at the lowest
-#   bitrate by default. This slows down the connection. We could include the desired
-#   transmit bitrate in the RadioTap header when injecting frames. But if retransmissions
-#   are not sent, we can't do adaptive transmit rate control, meaning frame transmission
-#   would become unreliable.
+# - There will be no transmission rate control. In other words, all frames will be sent at the
+#   lowest bitrate by default. This slows down the connection. We could include the desired
+#   transmit bitrate in the RadioTap header when injecting frames, and implement rate control
+#   ourselves, but that is tedious and falling back to lower rates when no ACKs is received
+#   may not be possible (i.e. we can't do adaptive transmit rate control, meaning frame
+#   transmission at higher bitrates would become especially unreliable).
 #
 # - When acting as an AP, the client may go into sleep mode, and tracking the sleep
 #   mode of clients in Scapy is non-trivial and likely not fast enough. This means the
@@ -37,10 +40,11 @@
 #
 # The below approach for the AP and client seems to work better. But more extensive testing
 # is still needed to confirm on how many networks cards this works & to study whether better
-# approaches exist.
+# approaches exist. The downside is that we sometimes need to modify Hostapd to work as we
+# want it to.
 #
 #
-# CURRENT DESIGN APPROACH
+# --- CURRENT DESIGN APPROACH ---
 #
 # AP: To clone the legitimate AP on another channel we use Hostapd:
 #
@@ -69,11 +73,16 @@
 #     - A virtual monitor interface is used to recieve and inject arbitrary frames.
 #
 #
-# GENERAL:
+# --- GENERAL REMARKS ---
 #
-#     - We use BFP packet filers so that only relevant frames reach Scapy. Otherwise the
-#       performance of this script is way too slow.
+#     - We use BFP packet filers so that only relevant Wi-Fi frames reach our script. Otherwise
+#       the performance of Python/Scapy is way too slow, especially when there's a lot of
+#       background traffic.
 #
+#     - An alternative approach to modifying Hostapd is to directly configure the network card
+#       from Python using nl80211 commands (e.g., putting it in AP mode, setting the information
+#       in the beacons, adding clients, etc). It's unclear to me how much work this would take
+#       and whether it's easier or harder than modifying Hostapd.
 #
 
 from libwifi import *

