@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 # Start from a clean environment
 rm -rf venv/
