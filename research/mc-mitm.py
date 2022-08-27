@@ -872,27 +872,11 @@ if __name__ == "__main__":
 	parser.add_argument("--continuous-csa", help="Continuously send CSA beacons on the real channel (10 CSAs/second)", action='store_true')
 	parser.add_argument("--reduce-output", default=False, help="Only display new data frames every 2 seconds", action='store_true')
 	parser.add_argument("--group", default=False, help="Also forward all group-addressed frames to the rouge channel", action='store_true')
-	# Some parameters that are probably useful to target specific frames. There parameters are not used by default.
-	parser.add_argument("--min-len", type=int, help="Minimum length of packets to target.")
-	parser.add_argument("--max-len", type=int, help="Maximum length of packets to target.")
-	parser.add_argument("--tid", default=False, action="store_true", help="Attack packet is detected by unique 802.11 QoS TID.")
 	args = parser.parse_args()
 
 	# Sanatize arguments
 	if args.target:
 		args.target = args.target.lower()
-	if not args.tid and not (args.min_len and args.max_len):
-		log(STATUS, "Please specify either --tid or both --min-len and --max-len")
-		quit(1)
-
-	# To make the code easier to write, use maximum range if --tid is specified
-	if args.tid and not args.min_len:
-		args.min_len = 0
-	if args.tid and not args.max_len:
-		args.max_len = 3000
-	if args.min_len > args.max_len:
-		log(ERROR, f"Bad config: --min-len {args.min_len} is larger than --max-len {args.max_len}")
-		quit(1)
 
 	change_log_level(-args.debug)
 
