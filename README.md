@@ -12,6 +12,11 @@ this implementation is easier to modify, at the cost of the code being slower du
 For instance, this code is the basis of the proof-of-concept attacks for the [KRACK](https://krackattacks.com)
 and [FragAttacks](https://fragattacks.com) research.
 
+Code history:
+* The first implementation of the multi-channel machine-in-the-middle was done in C and only supported Atheros Wi-Fi dongles. See the [ModWifi MC-MitM code](https://github.com/vanhoefm/modwifi#channel-mitm-and-tkip-broadcast-attack).
+* A first Python version of the mc-mitm was used in the [KRACK all-zero key proof-of-concept](https://github.com/vanhoefm/krackattacks-poc-zerokey) attack against Android and Linux.
+* Others [reproduced the KRACK all-zero key PoC and added substantial comments to the Python code](https://github.com/lucascouto/krackattack-all-zero-tk-key). That may be useful to understand the code.
+* This is cleaned-up code of the above Python script to make it easier to use as the basis for other attacks.
 
 <a id="id-prerequisites"></a>
 # 2. Prerequisites
