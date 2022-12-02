@@ -115,7 +115,7 @@ Let's now start the machine-in-the-middle script that will wait for a victim to 
 	cd mc-mitm/research
 	sudo su
 	source venv/bin/activate
-	./mc-mitm.py wlan2 wlan3 testnetwork --target 02:00:00:00:01:00 --continuous-csa --tid
+	./mc-mitm.py wlan2 wlan3 testnetwork --target 02:00:00:00:01:00 --continuous-csa
 
 Notice that in this example we will target a specific client MAC address. Targeting
 a specific test client improves the reliability of the attack (frames will be acknowleged
