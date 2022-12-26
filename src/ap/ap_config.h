@@ -472,6 +472,7 @@ struct hostapd_bss_config {
 	int wmm_advertised;
 	int rsn_ptksa_counters;
 	int rsn_gtksa_counters;
+	struct wpabuf *mitm_beacon;
 #endif /* ATTACK_MC_MITM */
 	int wmm_uapsd;
 

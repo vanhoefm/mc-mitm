@@ -2027,6 +2027,31 @@ fail:
 #endif /* CONFIG_ACS */
 
 
+#ifdef ATTACK_MC_MITM
+static int parse_mitm_beacon(struct hostapd_bss_config *bss, char *buf)
+{
+	struct wpabuf *payload;
+	size_t len;
+
+	len = os_strlen(buf);
+	if (len & 1)
+		return -1;
+	len /= 2;
+	payload = wpabuf_alloc(len);
+	if (!payload)
+		return -1;
+	if (hexstr2bin(buf, wpabuf_put(payload, len), len) < 0) {
+		wpabuf_free(payload);
+		return -1;
+	}
+
+	bss->mitm_beacon = payload;
+
+	return 0;
+}
+#endif /* ATTACK_MC_MITM */
+
+
 static int parse_wpabuf_hex(int line, const char *name, struct wpabuf **buf,
 			    const char *val)
 {
@@ -3382,6 +3407,12 @@ static int hostapd_config_fill(struct hostapd_config *conf,
 		bss->rsn_ptksa_counters = atoi(pos);
 	} else if (os_strcmp(buf, "rsn_gtksa_counters") == 0) {
 		bss->rsn_gtksa_counters = atoi(pos);
+	} else if (os_strcmp(buf, "mitm_beacon") == 0) {
+		if (parse_mitm_beacon(bss, pos)) {
+			wpa_printf(MSG_ERROR, "Line %d: invalid mitm_beacon",
+				   line);
+			return 1;
+		}
 #endif /* ATTACK_MC_MITM */
 	} else if (os_strcmp(buf, "uapsd_advertisement_enabled") == 0) {
 		bss->wmm_uapsd = atoi(pos);

