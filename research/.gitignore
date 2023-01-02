@@ -1,4 +1,0 @@
-hostapd_rogue.conf
-hostapd_rogue.log
-*.pcap
-venv/
