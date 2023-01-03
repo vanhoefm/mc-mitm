@@ -1,133 +1,55 @@
 #!/usr/bin/env python3
-# Copyright (c) 2017-2022, Mathy Vanhoef <mathy.vanhoef@kuleuven.be>
+# Copyright (c) 2017-2023, Mathy Vanhoef <mathy.vanhoef@kuleuven.be>
 #
 # This code may be distributed under the terms of the BSD license.
 # See README for more details.
 
 
-# --- DESIGN BACKGROUND ---
+# --- PERFORMANCE REMARKS ---
 #
-# An alternative method to implement a Multi-Channel Machine-in-the-Middle is to create
-# two monitor interfaces (on two different channels) and to forward frames between
-# both channels. Although simple and only requiring monitor mode support, this
-# approach has notable downsides in practice:
-#
-# - Both interfaces will likely not acknowledge frames sent towards it. This means the
-#   legitimate client and AP will constantly retransmit frames. This may cause handshakes
-#   to fail. The ACK behaviour in monitor mode seems to depend on the network card being
-#   used: some behave different by default. But in general we cannot rely on frames being
-#   ACK'ed. In theory this can be fixed by executing `iw wlan0 set monitor active` but very
-#   few devices support the `active` flag. When this flag is set, the network card in monitor
-#   mode is supposed to ACK frames send towards it. Note that we cannot send ACK frames from
-#   Scapy, they would be generated *way* too slow. Even sending ACKs in userspace C code
-#   would be too slow (they typically should be send in under 10 microseconds).
-#
-# - Both interfaces will not retransmit frames when the reciever doesn't acknowledge
-#   the frame. So there could be a high amount of packet loss. This again depends on
-#   the network card, some behave different by default when in monitor mode, but many
-#   won't retransmit frames by default.
-#
-# - There will be no transmission rate control. In other words, all frames will be sent at the
-#   lowest bitrate by default. This slows down the connection. We could include the desired
-#   transmit bitrate in the RadioTap header when injecting frames, and implement rate control
-#   ourselves, but that is tedious and falling back to lower rates when no ACKs is received
-#   may not be possible (i.e. we can't do adaptive transmit rate control, meaning frame
-#   transmission at higher bitrates would become especially unreliable).
-#
-# - When acting as an AP, the client may go into sleep mode, and tracking the sleep
-#   mode of clients in Scapy is non-trivial and likely not fast enough. This means the
-#   MC-MITM connection would appear unreliable against mobile devices.
-#
-# The below approach for the AP and client seems to work better. But more extensive testing
-# is still needed to confirm on how many networks cards this works & to study whether better
-# approaches exist. The downside is that we sometimes need to modify Hostapd to work as we
-# want it to.
+# We use BFP packet filers so that only relevant Wi-Fi frames reach our script. Otherwise
+# the performance of Python/Scapy is way too slow, especially when there's a lot of
+# background traffic.
 #
 #
-# --- CURRENT DESIGN APPROACH ---
+# --- CURRENT FRAME INJECTION APPROACH ---
 #
-# AP: To clone the legitimate AP on another channel we use Hostapd:
+# See also https://github.com/vanhoefm/wifi-injection
 #
-#     - This Hostapd will generate beacons. We configure Hostapd with the appropriate
-#       parameters so that the security information in the beacon matches the real beacon.
-#       Other parts of the beacon may be different from the legitimate one, but that doesn't
-#       matter, WPA2 only verifies the security info in the RSNE element.
+# AP: To clone the legitimate AP on another channel we use `iw`:
 #
-#     - When a client tries to connect, we let Hostapd add this client.
+#     - We put the interface in AP mode (using "iw set wlan0 type __ap") and then
+#       use the "start ap" command to let it broadcast beacons. This assures the
+#       interface will send acknowledgements and it should retransmit frames.
 #
 #     - A virtual monitor interface is used to recieve and inject arbitrary frames
 #
-#     - The Hostapd instance is modified to ignore all frames towards it.
+#     - TODO: It may be useful to add clients to the kernel when they are connecting?
+#             o I'm not sure if rate control is done properly without adding STA info
+#               to the kernel. We could do this ourselves in RadioTap but that's tedious.
+#             o The client may go into sleep mode. I'm not sure the kernel will
+#               buffer frames unless we explicitly added / are tracking the client?
 #
 #
-# CLIENT: We create a virtual managed and monitor interface:
 #
-#     - We create a managed interface with the MAC address of the client we are targeting.
-#          [ TODO: Verify again that this indeed does this ]
-#       Putting this interface up seems to be enough to assure that this network card will
-#       now ACK frames towards it. This has as downside that we can only reliably target
-#       a single client at a time. The only known method to avoid this is to use MAC address
+# CLIENT: We try to put the interface into active monitor mode and otherwise create an AP:
+#
+#     - To make the interface acknowledge frames we try to put it into active monitor mode.
+#       Few interfaces support this, so as a fallback we create an AP that also advertises
+#       the rogue beacon on the real channel.
+#       The downside of both approaches is that with them we can only reliably target a
+#       single client at a time. The only known method to avoid this is to use MAC address
 #       masks as done in Modwifi (https://github.com/vanhoefm/modwifi) but that requires
 #       specific (older) dongles and kernel/driver modifications.
 #
 #     - A virtual monitor interface is used to recieve and inject arbitrary frames.
 #
-#
-# --- GENERAL REMARKS ---
-#
-#     - We use BFP packet filers so that only relevant Wi-Fi frames reach our script. Otherwise
-#       the performance of Python/Scapy is way too slow, especially when there's a lot of
-#       background traffic.
-#
-#     - An alternative approach to modifying Hostapd is to directly configure the network card
-#       from Python using nl80211 commands (e.g., putting it in AP mode, setting the information
-#       in the beacons, adding clients, etc). It's unclear to me how much work this would take
-#       and whether it's easier or harder than modifying Hostapd.
+#     - TODO: Do we need to register/connect to the AP to get rate control working?
 #
 
 from libwifi import *
 import sys, os, socket, struct, time, argparse, heapq, subprocess, atexit, select
 from datetime import datetime
-
-
-def start_ap(iface, beacon, channel, beacon_interval=100, dtim_period=1):
-	"""
-	Put the interface in AP mode and start broadcasting a beacon. The functionality of
-	Linux is a bit weird here. When using "iw iface set type ap" it claims that a daemon
-	like hostapd is required. But by using "iw iface set type __ap" we can set it in AP
-	mode, and we can then use the "iw ... start ap" command to start broadcasting beacons.
-	All other AP functionality would require a deamon or manual nl80211 calls.
-	"""
-	beacon = beacon.copy()
-	ssid = get_ssid(beacon)
-	freq = chan2freq(channel)
-
-	prev_tim = get_prev_element(beacon, IEEE_TLV_TYPE_TIM)
-	if prev_tim == None:
-		log(ERROR, "start_ap: unable to find TIM element in reference beacon")
-		quit(1)
-
-	after_tim = prev_tim.payload.payload
-	prev_tim.remove_payload()
-
-	head = raw(beacon).hex()
-	tail = raw(after_tim).hex()
-
-	subprocess.check_output(["ifconfig", iface, "down"])
-	subprocess.check_output(["iw", iface, "set", "type", "__ap"])
-	subprocess.check_output(["ifconfig", iface, "up"])
-	# iw dev <devname> ap start  <SSID> <control freq> [5|10|20|40|80|80+80|160] [<center1_freq> [<center2_freq>]]
-	#		<beacon interval in TU> <DTIM period> [hidden-ssid|zeroed-ssid] head <beacon head in hexadecimal>
-	#		[tail <beacon tail in hexadecimal>] [inactivity-time <inactivity time in seconds>] [key0:abcde d:1:6162636465]
-	cmd = ["iw", "dev", iface, "ap", "start", ssid, str(freq), str(beacon_interval), str(dtim_period), "head", head, "tail", tail]
-	log(STATUS, f"Starting AP using: {' '.join(cmd)}")
-	subprocess.check_output(cmd)
-
-
-def stop_ap(iface):
-	cmd = ["iw", "dev", iface, "ap", "stop"]
-	log(STATUS, f"Stopping AP using: {' '.join(cmd)}")
-	subprocess.check_output(cmd)
 
 
 #### Packet Processing Functions ####
@@ -369,9 +291,9 @@ class McMitm():
 	def __init__(self, nic_real, nic_rogue, ssid, clientmac=None, dumpfile=None,
 			cont_csa=False, low_output=False, strict_echo_test=False):
 		self.nic_real_mon = nic_real
-		self.nic_real_ap = nic_real + "ap"
+		self.nic_real_ap = nic_real[:13] + "ap"
 		self.nic_rogue_mon = nic_rogue
-		self.nic_rogue_ap = nic_rogue + "ap"
+		self.nic_rogue_ap = nic_rogue[:13] + "ap"
 
 		self.dumpfile = dumpfile
 		self.ssid = ssid
@@ -580,7 +502,7 @@ class McMitm():
 
 		# 4. Always display all frames sent by or to the targeted client, even when they are sent to/from
 		#    a different AP. This may happen when the victim is connecting to a different (wrong) AP.
-		elif p.addr1 == self.clientmac or p.addr2 == self.clientmac:
+		elif self.clientmac is not None and self.clientmac in [p.addr1, p.addr2]:
 			self.last_print_roguechan = self.display_client_traffic(p, "Real channel ", self.last_print_roguechan)
 
 
@@ -640,7 +562,7 @@ class McMitm():
 				self.add_client(client)
 				will_forward = True
 			# Always display all frames sent by the targeted client, taking into account output rate limiting.
-			elif p.addr2 == self.clientmac:
+			elif self.clientmac is not None and p.addr2 == self.clientmac:
 				self.last_print_realchan = self.display_client_traffic(p, "Rogue channel", self.last_print_realchan)
 
 			# If this now belongs to a client we want to track, process the packet further
@@ -660,7 +582,7 @@ class McMitm():
 				pass
 
 		# 4. Always display all frames sent by or to the targeted client, taking into account output rate limiting.
-		elif p.addr1 == self.clientmac or p.addr2 == self.clientmac:
+		elif self.clientmac is not None and self.clientmac in [p.addr1, p.addr2]:
 			self.last_print_realchan = self.display_client_traffic(p, "Rogue channel", self.last_print_realchan)
 
 
@@ -681,8 +603,6 @@ class McMitm():
 		subprocess.check_output(["iw", self.nic_rogue_mon, "interface", "add", self.nic_rogue_ap, "type", "__ap"])
 		set_monitor_mode(self.nic_real_mon, up=False, mtu=2000)
 		set_monitor_mode(self.nic_rogue_mon, up=False, mtu=2000)
-
-		set_macaddress(self.nic_real_mon, self.clientmac)
 
 		# 3. Finally put the monitor interfaces up
 		subprocess.check_output(["rfkill", "unblock", "wifi"])
@@ -741,7 +661,15 @@ class McMitm():
 		# Now that we know the channel of the AP, put the monitor mode in active ACK mode (might start an AP)
 		if start_nic_real_ap:
 			subprocess.check_output(["iw", self.nic_real_mon, "interface", "add", self.nic_real_ap, "type", "__ap"])
-			start_ap(self.nic_real_ap, self.beacon, self.netconfig.real_channel)
+			log(STATUS, f"Setting MAC address of {self.nic_real_ap} to {self.clientmac}")
+			set_macaddress(self.nic_real_ap, self.clientmac)
+			# Note: at least for ath9k_htc and rt2800usb the MAC address used in the
+			#       beacon doesn't influence ACK / retransmission behaviour. For that
+			#       behaviour it uses the configured MAC address of the interface.
+			start_ap(self.nic_real_ap, self.netconfig.real_channel, self.beacon)
+		else:
+			log(STATUS, f"Setting MAC address of {self.nic_real_mon} to {self.clientmac}")
+			set_macaddress(self.nic_real_mon, self.clientmac)
 
 		#
 		# 3. Set up the rogue AP and interfaces
@@ -763,7 +691,7 @@ class McMitm():
 
 		# Set up a rouge AP that clones the target network (don't use tempfile - it can be useful to
 		# manually use the generated config).
-		start_ap(self.nic_rogue_ap, self.beacon, self.netconfig.rogue_channel)
+		start_ap(self.nic_rogue_ap, self.netconfig.rogue_channel, self.beacon)
 		log(STATUS, "Giving the rogue AP one second to initialize ...")
 		time.sleep(1)
 
