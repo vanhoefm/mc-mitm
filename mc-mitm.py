@@ -7,7 +7,7 @@
 
 # --- PERFORMANCE REMARKS ---
 #
-# We use BFP packet filers so that only relevant Wi-Fi frames reach our script. Otherwise
+# We use BFP packet filters so that only relevant Wi-Fi frames reach our script. Otherwise
 # the performance of Python/Scapy is way too slow, especially when there's a lot of
 # background traffic.
 #
